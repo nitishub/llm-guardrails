@@ -1,0 +1,12 @@
+# Python virtual environment (large and machine-specific)
+.venv/
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
+# Secrets such as API keys. Never commit these.
+.env
+
+# macOS system files
+.DS_Store
