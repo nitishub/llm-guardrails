@@ -22,3 +22,15 @@ def find_pii(text: str) -> List[PIIMatch]:
         for m in pattern.finditer(text):
             matches.append(PIIMatch(kind=kind, value=m.group(), start=m.start(), end=m.end()))
     return sorted(matches, key=lambda match: match.start)
+
+def redact_pii(text: str, matches: List[PIIMatch]) -> str:
+    parts = []
+    cursor = 0
+    for match in matches:
+        if match.start < cursor:
+            continue
+        parts.append(text[cursor:match.start])
+        parts.append(f"[{match.kind}]")
+        cursor = match.end
+    parts.append(text[cursor:])
+    return "".join(parts)
