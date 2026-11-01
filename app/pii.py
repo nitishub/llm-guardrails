@@ -27,9 +27,10 @@ def redact_pii(text: str, matches: List[PIIMatch]) -> str:
     parts = []
     cursor = 0
     for match in matches:
-        if match.start < cursor:
+        if match.end <= cursor:        # fully inside an earlier match
             continue
-        parts.append(text[cursor:match.start])
+        start = max(match.start, cursor)
+        parts.append(text[cursor:start])
         parts.append(f"[{match.kind}]")
         cursor = match.end
     parts.append(text[cursor:])
