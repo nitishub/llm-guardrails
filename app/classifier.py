@@ -22,19 +22,31 @@ class ClassifierResult:
     is_injection: bool
 
 
+def _pick_device() -> str:
+    override = os.getenv("GUARDRAILS_DEVICE")
+    if override:
+        return override
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 @lru_cache(maxsize=1)
 def _load_model():
+    device = _pick_device()
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME).to(device)
     model.eval()
-    return tokenizer, model
+    return tokenizer, model, device
 
 
 def classify_injection(text: str) -> Optional[ClassifierResult]:
     if not ML_AVAILABLE:
         return None
-    tokenizer, model = _load_model()
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    tokenizer, model, device = _load_model()
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512).to(device)
     with torch.no_grad():
         logits = model(**inputs).logits
     probabilities = torch.softmax(logits, dim=-1)[0]
