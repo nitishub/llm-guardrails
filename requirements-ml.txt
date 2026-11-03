@@ -1,0 +1,3 @@
+-r requirements.txt
+transformers==<your version>
+torch==<your version>
