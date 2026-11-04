@@ -1,3 +1,3 @@
 -r requirements.txt
-transformers==<your version>
-torch==<your version>
+transformers==5.22.1
+torch==2.15.0
