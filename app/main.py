@@ -53,6 +53,8 @@ def chat(request: ChatRequest, http_response: Response) -> ChatResponse:
         "action": decision.action.value,
         "reasons": decision.reasons,
         "classifier_score": round(decision.classifier.score, 4) if decision.classifier else None,
+        "judge_injection": decision.judge.is_injection if decision.judge else None,
+        "judge_error": decision.judge.error if decision.judge else None,
         "prompt_chars": len(request.prompt),
         "screen_ms": round((time.perf_counter() - started) * 1000, 1),
     }
