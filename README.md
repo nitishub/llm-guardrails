@@ -1,5 +1,7 @@
 # LLM Guardrails Middleware
 
+[![tests](https://github.com/nitishub/llm-guardrails/actions/workflows/tests.yml/badge.svg)](https://github.com/nitishub/llm-guardrails/actions/workflows/tests.yml)
+
 A security layer that sits between users and a large language model (LLM). Every prompt is checked for **prompt injection**, **jailbreaks** and **personal data (PII)** before it is allowed to reach the model.
 
 > **Status:** core pipeline, LLM integration and test suite are complete. Evaluation, hardening and deployment are in progress (see [Roadmap](#roadmap)).
