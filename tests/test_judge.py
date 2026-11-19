@@ -11,7 +11,7 @@ class FakeOpenAI:
         self.content = content
         self.error = error
         self.messages = []
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create)) #creates fake object - completions
 
     def _create(self, **kwargs):
         self.messages.append(kwargs["messages"])
@@ -21,6 +21,7 @@ class FakeOpenAI:
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
+#test that a valid judge verdict is parsed
 def test_valid_verdict_is_parsed(monkeypatch):
     fake = FakeOpenAI(content='{"is_injection": true, "reason": "role-play jailbreak"}')
     monkeypatch.setattr(judge, "_client", fake)
@@ -30,6 +31,7 @@ def test_valid_verdict_is_parsed(monkeypatch):
     assert result.error is None
 
 
+#test that every kind of judge failure blocks the prompt (fail-closed)
 @pytest.mark.parametrize(
     "fake",
     [
@@ -46,12 +48,13 @@ def test_failures_fail_closed(monkeypatch, fake):
     assert result.error is not None
 
 
+#test that fail-open can be switched on
 def test_fail_open_is_configurable(monkeypatch):
     monkeypatch.setattr(judge, "_client", FakeOpenAI(error=OpenAIError("provider down")))
     monkeypatch.setattr(judge, "FAIL_OPEN", True)
     assert judge.judge_prompt("anything").is_injection is False
 
-
+#test that the input is wrapped in a random boundary
 def test_input_is_wrapped_in_a_random_boundary(monkeypatch):
     fake = FakeOpenAI(content='{"is_injection": false, "reason": "ok"}')
     monkeypatch.setattr(judge, "_client", fake)
