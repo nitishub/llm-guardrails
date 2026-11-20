@@ -1,5 +1,4 @@
-from app.classifier import ClassifierResult
-from app.pipeline import THRESHOLD
+from app.classifier import THRESHOLD, ClassifierResult
 
 
 def fake_classifier(score):

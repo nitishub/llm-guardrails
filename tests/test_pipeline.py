@@ -37,13 +37,22 @@ def test_regex_block_skips_classifier_and_judge(monkeypatch):
     assert decision.reasons == ["injection rule: IGNORE_INSTRUCTIONS"]
 
 
-#test that a high classifier score blocks without calling the judge
-def test_high_classifier_score_blocks_without_judge(monkeypatch):
+#test that the judge confirms a high classifier score
+def test_judge_confirms_classifier_flag(monkeypatch):
+    seen = []
     monkeypatch.setattr(pipeline, "classify_injection", fake_classifier(0.95))
+    monkeypatch.setattr(pipeline, "judge_prompt", fake_judge(True, seen))
     decision = screen_prompt("a cleverly paraphrased attack")
     assert decision.action == Action.BLOCK
-    assert decision.reasons == ["injection classifier score: 0.95"]
-    assert decision.judge is None
+    assert decision.reasons == ["injection judge: fake verdict"]
+
+
+#test that the judge can overrule a classifier false positive
+def test_judge_overrules_classifier_false_positive(monkeypatch):
+    seen = []
+    monkeypatch.setattr(pipeline, "classify_injection", fake_classifier(0.95))
+    monkeypatch.setattr(pipeline, "judge_prompt", fake_judge(False, seen))
+    assert screen_prompt("please disregard my last message").action == Action.ALLOW
 
 
 #test that a low classifier score skips the judge

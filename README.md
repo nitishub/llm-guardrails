@@ -30,9 +30,8 @@ flowchart TD
     B --> C{Layer 1<br/>Regex rules}
     C -- match --> X[BLOCK]
     C -- no match --> D{Layer 2<br/>DeBERTa classifier}
-    D -- "score ≥ 0.8" --> X
-    D -- "score < 0.8" --> F[PII redaction<br/>email, phone, SSN, card]
-    F --> E{Classifier unsure?<br/>score 0.5 – 0.8}
+    D --> F[PII redaction<br/>email, phone, SSN, card]
+    F --> E{Classifier suspicious?<br/>score ≥ 0.5}
     E -- no --> G
     E -- yes --> J{Layer 3<br/>LLM judge<br/>sees redacted text}
     J -- injection --> X
@@ -44,8 +43,8 @@ flowchart TD
 |---|---|---|
 | **Normalization** | Converts look-alike Unicode (e.g. fullwidth letters) to standard text and removes invisible characters | Stops attackers from hiding keywords like `ig​nore` from the other layers |
 | **1. Regex rules** | Catches known attack patterns: "ignore previous instructions", system-prompt extraction, role overrides, "developer mode", fake chat-template tags (`<\|im_start\|>`, `[INST]`, `<system>`) | Free, instant and predictable |
-| **2. ML classifier** | [`protectai/deberta-v3-base-prompt-injection-v2`](https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2) scores how likely a prompt is to be an attack | Catches reworded attacks that regex misses; runs locally on GPU, Apple Silicon or CPU |
-| **3. LLM judge** | GPT-5 nano gives a final verdict, but **only** on prompts the classifier is unsure about | Understands context, but is slow and costs money, so it's used sparingly |
+| **2. ML classifier** | [`protectai/deberta-v3-base-prompt-injection-v2`](https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2) scores how likely a prompt is to be an attack and flags suspicious ones | Catches reworded attacks that regex misses; runs locally on GPU, Apple Silicon or CPU |
+| **3. LLM judge** | GPT-5 nano makes the final call, but **only** on prompts the classifier flagged | Understands context, so it can overrule the classifier's false alarms; it's slow and costs money, so it's used sparingly |
 | **PII redaction** | Replaces emails, SSNs, phone numbers and credit-card numbers with `[EMAIL]`, `[PHONE]`, etc. | Personal data never leaves the service |
 
 Each request ends in one of three outcomes:
@@ -58,7 +57,8 @@ Each request ends in one of three outcomes:
 
 ## Key design decisions
 
-- **Defense in depth, cheapest first.** Each layer runs only if the earlier ones didn't already decide. Most traffic is handled by regex and the local classifier, so the paid LLM judge is called only for the unsure cases.
+- **Defense in depth, cheapest first.** Regex blocks obvious attacks instantly. The local classifier screens everything else, and only prompts it flags are sent to the paid LLM judge, which makes the final call.
+- **Design driven by evaluation.** The first version let the judge review only the classifier's "unsure" range (score 0.5–0.8). Evaluation showed the classifier is almost never unsure, so the judge was never called, while the classifier's own blocks caused most false positives. The judge now reviews every classifier flag instead.
 - **Fail closed.** If the judge errors, times out or returns malformed output, the prompt is **blocked**, not allowed. This can be changed with an environment variable for apps where availability matters more.
 - **The judge can't be hijacked by the input it's checking.** User text is wrapped in a random, unguessable boundary tag (`<input-3f9a…>`), and the judge must reply in a strict JSON schema that is validated again with Pydantic.
 - **Privacy by design.** Only redacted text reaches the LLM *and* the judge. Logs record what happened (action, scores, latency) but **never the prompt text**.
@@ -116,9 +116,9 @@ All settings are optional environment variables.
 | `GUARDRAILS_LLM_TIMEOUT` | `30` | LLM timeout (seconds) |
 | `GUARDRAILS_LLM_MAX_TOKENS` | `1000` | Maximum response length |
 | `GUARDRAILS_CLASSIFIER_MODEL` | `protectai/deberta-v3-base-prompt-injection-v2` | Hugging Face classifier |
-| `GUARDRAILS_CLASSIFIER_THRESHOLD` | `0.8` | Score at or above which the classifier blocks |
+| `GUARDRAILS_CLASSIFIER_THRESHOLD` | `0.8` | Score at or above which the classifier labels a prompt an injection (reported in evaluation; the judge makes the blocking decision) |
 | `GUARDRAILS_DEVICE` | auto (`cuda` → `mps` → `cpu`) | Where the classifier runs |
-| `GUARDRAILS_JUDGE_LOW` | `0.5` | Lowest classifier score that sends a prompt to the judge |
+| `GUARDRAILS_JUDGE_LOW` | `0.5` | Lowest classifier score that sends a prompt to the judge for a final decision |
 | `GUARDRAILS_JUDGE_MODEL` | `gpt-5-nano` | Model used as the judge |
 | `GUARDRAILS_JUDGE_TIMEOUT` | `10` | Judge timeout (seconds) |
 | `GUARDRAILS_JUDGE_FAIL_OPEN` | `false` | Set to `true` to allow prompts when the judge is unavailable |
@@ -132,7 +132,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-There are **50 tests** (47 pass, plus 3 marked as known limitations). They run **fully offline in seconds**: the ML model and OpenAI are replaced with fakes, so the tests are fast, repeatable and never cost money.
+There are **51 tests** (48 pass, plus 3 marked as known limitations). They run **fully offline in seconds**: the ML model and OpenAI are replaced with fakes, so the tests are fast, repeatable and never cost money.
 
 Instead of implementation details, the tests check security guarantees:
 
@@ -184,7 +184,7 @@ No guardrail is perfect. These are the known gaps:
 - [x] DeBERTa ML classifier (CUDA / Apple Silicon / CPU)
 - [x] OpenAI GPT-5 nano integration
 - [x] Request IDs, structured JSON logs, graceful `502` on provider failure
-- [x] LLM-as-a-judge for unsure cases (strict JSON schema, fail-closed)
+- [x] LLM-as-a-judge that makes the final call on classifier flags (strict JSON schema, fail-closed)
 - [x] Offline pytest suite
 - [ ] **CI:** run tests automatically on every push with GitHub Actions
 - [ ] **Red-team evaluation:** a labeled dataset of attack and harmless prompts, reporting catch rate, false-positive rate, latency (p50/p95) and judge cost for each layer
