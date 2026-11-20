@@ -4,7 +4,7 @@
 
 A security layer that sits between users and a large language model (LLM). Every prompt is checked for **prompt injection**, **jailbreaks** and **personal data (PII)** before it is allowed to reach the model.
 
-> **Status:** core pipeline, LLM integration and test suite are complete. Evaluation, hardening and deployment are in progress (see [Roadmap](#roadmap)).
+> **Status:** core pipeline, LLM integration, tests, CI and evaluation are complete. Hardening and deployment are in progress (see [Roadmap](#roadmap)).
 
 **Tech stack:** Python 3.12 · FastAPI · PyTorch · Hugging Face Transformers (DeBERTa) · OpenAI API (GPT-5 nano) · Pydantic · pytest
 
@@ -52,6 +52,23 @@ Each request ends in one of three outcomes:
 - **`allow`**: the prompt is sent to the LLM unchanged.
 - **`redact`**: personal data is masked first, then the prompt is sent.
 - **`block`**: the prompt never reaches the LLM.
+
+---
+
+## Results
+
+Measured on a hand-written, held-out set of **86 prompts** (49 attacks across 8 categories, and 37 harmless prompts, most of them deliberately tricky):
+
+| | v1 | v2 (current) |
+|---|---|---|
+| Attacks caught | 98% (48/49) | **98% (48/49)** |
+| False positives | 24% (9/37) | **8% (3/37)** |
+| Median screening latency | 31 ms | 30 ms |
+| Judge cost | $0 | about $0.0001 per flagged prompt |
+
+The first evaluation showed that the LLM judge was **never called**: the classifier was never "unsure". It also showed that the classifier's own blocks caused most false positives. In v2, the judge makes the final call on everything the classifier flags. It overruled all 6 classifier false alarms and confirmed all 34 attacks it reviewed. The 3 false positives left come from regex rules and are kept on purpose.
+
+Full method, raw outputs and trade-offs are in **[docs/evaluation.md](docs/evaluation.md)**.
 
 ---
 
@@ -159,6 +176,9 @@ app/
 ├── pii.py          # PII detection and redaction
 └── llm.py          # OpenAI client for the downstream model
 tests/              # Offline pytest suite
+data/redteam.jsonl  # Labelled evaluation dataset (86 prompts)
+scripts/evaluate.py # Evaluation: catch rate, false positives, latency, judge cost
+docs/evaluation.md  # Evaluation report
 ```
 
 ---
@@ -186,8 +206,8 @@ No guardrail is perfect. These are the known gaps:
 - [x] Request IDs, structured JSON logs, graceful `502` on provider failure
 - [x] LLM-as-a-judge that makes the final call on classifier flags (strict JSON schema, fail-closed)
 - [x] Offline pytest suite
-- [ ] **CI:** run tests automatically on every push with GitHub Actions
-- [ ] **Red-team evaluation:** a labeled dataset of attack and harmless prompts, reporting catch rate, false-positive rate, latency (p50/p95) and judge cost for each layer
+- [x] **CI:** tests run automatically on every push with GitHub Actions
+- [x] **Red-team evaluation:** a labelled dataset of attack and harmless prompts, reporting catch rate, false-positive rate, latency and judge cost for each layer ([report](docs/evaluation.md))
 - [ ] **Hardening:** API-key authentication, rate limiting, loading the model at startup, and a `/ready` endpoint
 - [ ] **Docker image:** CPU-only, with the model built into the image
 - [ ] **Cloud deployment** with HTTPS and health checks
