@@ -6,10 +6,13 @@ import time
 import uuid
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Response, Security
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from openai import OpenAIError
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.llm import call_llm
 from app.pipeline import Action, screen_prompt
@@ -41,6 +44,18 @@ def require_api_key(api_key: Optional[str] = Security(api_key_header)) -> None:
             detail="Invalid or missing API key",
             headers={"WWW-Authenticate": "ApiKey"},
         )
+    
+RATE_LIMIT = os.environ.get("GUARDRAILS_RATE_LIMIT", "20/minute")
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=os.environ.get("GUARDRAILS_RATE_LIMIT_STORAGE", "memory://"),
+    strategy="sliding-window-counter",
+    headers_enabled=True,
+    in_memory_fallback_enabled=True,
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 class ChatRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=10_000)
@@ -59,12 +74,13 @@ def health() -> dict:
 
 
 @app.post("/chat", dependencies=[Depends(require_api_key)])
-def chat(request: ChatRequest, http_response: Response) -> ChatResponse:
+@limiter.limit(RATE_LIMIT)
+def chat(request: Request, body: ChatRequest, response: Response) -> ChatResponse:
     request_id = uuid.uuid4().hex
-    http_response.headers["X-Request-ID"] = request_id
+    response.headers["X-Request-ID"] = request_id
     started = time.perf_counter()
 
-    decision = screen_prompt(request.prompt)
+    decision = screen_prompt(body.prompt)
     fields = {
         "event": "chat",
         "request_id": request_id,
@@ -73,7 +89,7 @@ def chat(request: ChatRequest, http_response: Response) -> ChatResponse:
         "classifier_score": round(decision.classifier.score, 4) if decision.classifier else None,
         "judge_injection": decision.judge.is_injection if decision.judge else None,
         "judge_error": decision.judge.error if decision.judge else None,
-        "prompt_chars": len(request.prompt),
+        "prompt_chars": len(body.prompt),
         "screen_ms": round((time.perf_counter() - started) * 1000, 1),
     }
 

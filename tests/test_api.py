@@ -80,3 +80,19 @@ def test_logs_never_contain_the_prompt(caplog):
     client.post("/chat", json={"prompt": "email john@example.com"})
     assert '"action": "redact"' in caplog.text
     assert "john@example.com" not in caplog.text
+
+#test that a client over the rate limit gets 429 with Retry-After and never reaches the LLM
+def test_rate_limit_returns_429(monkeypatch):
+    for _ in range(5):
+        assert client.post("/chat", json={"prompt": "hi"}).status_code == 200
+    monkeypatch.setattr(main, "call_llm", lambda prompt: pytest.fail("LLM was called"))
+    response = client.post("/chat", json={"prompt": "hi"})
+    assert response.status_code == 429
+    assert int(response.headers["retry-after"]) >= 1
+
+
+#test that requests rejected by auth don't use up the rate limit
+def test_bad_api_key_does_not_count_toward_rate_limit():
+    for _ in range(10):
+        TestClient(main.app).post("/chat", json={"prompt": "hi"})
+    assert client.post("/chat", json={"prompt": "hi"}).status_code == 200
