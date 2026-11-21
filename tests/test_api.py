@@ -6,12 +6,25 @@ from openai import OpenAIError
 
 from app import main
 
-client = TestClient(main.app)
+client = TestClient(main.app, headers={"X-API-Key": "test-api-key"})
 
 
 #test that the health endpoint responds
 def test_health():
     assert client.get("/health").json() == {"status": "ok"}
+
+
+#test that /health stays public so load balancers can reach it
+def test_health_does_not_need_api_key():
+    assert TestClient(main.app).get("/health").status_code == 200
+
+
+#test that /chat rejects a missing, wrong or non-ASCII API key without calling the LLM
+@pytest.mark.parametrize("headers", [{}, {"X-API-Key": "wrong"}, {"X-API-Key": "é".encode("latin-1")}])
+def test_bad_api_key_is_rejected(monkeypatch, headers):
+    monkeypatch.setattr(main, "call_llm", lambda prompt: pytest.fail("LLM was called"))
+    response = TestClient(main.app).post("/chat", json={"prompt": "hi"}, headers=headers)
+    assert response.status_code == 401
 
 
 #test that an allowed prompt reaches the LLM and gets a request ID

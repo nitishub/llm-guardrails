@@ -1,10 +1,13 @@
 import json
 import logging
+import os
+import secrets
 import time
 import uuid
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response, Security
+from fastapi.security import APIKeyHeader
 from openai import OpenAIError
 from pydantic import BaseModel, Field
 
@@ -23,6 +26,21 @@ app = FastAPI(
     version="0.1.0",
 )
 
+API_KEY = os.environ.get("GUARDRAILS_API_KEY", "")
+if not API_KEY:
+    raise RuntimeError("GUARDRAILS_API_KEY is not set; refusing to start without authentication.")
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(api_key: Optional[str] = Security(api_key_header)) -> None:
+    # Compare bytes: compare_digest raises on non-ASCII strings, which would turn a bad key into a 500.
+    if api_key is None or not secrets.compare_digest(api_key.encode(), API_KEY.encode()):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
 
 class ChatRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=10_000)
@@ -40,7 +58,7 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/chat")
+@app.post("/chat", dependencies=[Depends(require_api_key)])
 def chat(request: ChatRequest, http_response: Response) -> ChatResponse:
     request_id = uuid.uuid4().hex
     http_response.headers["X-Request-ID"] = request_id

@@ -1,6 +1,7 @@
 import os
 
 os.environ["OPENAI_API_KEY"] = "sk-test-not-a-real-key"
+os.environ["GUARDRAILS_API_KEY"] = "test-api-key"
 
 import pytest
 
