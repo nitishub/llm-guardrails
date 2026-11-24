@@ -96,3 +96,33 @@ def test_bad_api_key_does_not_count_toward_rate_limit():
     for _ in range(10):
         TestClient(main.app).post("/chat", json={"prompt": "hi"})
     assert client.post("/chat", json={"prompt": "hi"}).status_code == 200
+
+
+#test that /ready returns 503 before startup warmup has completed
+def test_ready_returns_503_before_startup():
+    response = TestClient(main.app).get("/ready")
+    assert response.status_code == 503
+    assert response.json() == {"status": "not_ready", "classifier": "starting"}
+
+
+#test that startup warms up the classifier and /ready returns 200 without an API key
+@pytest.mark.parametrize("loaded,expected_status", [(True, "loaded"), (False, "disabled")])
+def test_ready_returns_200_after_startup_warmup(monkeypatch, loaded, expected_status):
+    monkeypatch.setattr(main, "warmup_classifier", lambda: loaded)
+    with TestClient(main.app) as started_client:
+        response = started_client.get("/ready")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ready", "classifier": expected_status}
+
+
+#test that a failed model warmup marks /ready as 503 while /health stays 200
+def test_failed_warmup_keeps_health_ok_but_ready_503(monkeypatch):
+    def broken_warmup():
+        raise RuntimeError("model download failed")
+
+    monkeypatch.setattr(main, "warmup_classifier", broken_warmup)
+    with TestClient(main.app) as started_client:
+        assert started_client.get("/health").status_code == 200
+        ready_response = started_client.get("/ready")
+        assert ready_response.status_code == 503
+        assert ready_response.json() == {"status": "not_ready", "classifier": "failed"}

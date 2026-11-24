@@ -16,4 +16,7 @@ def offline_layers(monkeypatch):
     monkeypatch.setattr(pipeline, "classify_injection", fake_classifier(0.0))
     monkeypatch.setattr(pipeline, "judge_prompt", unexpected_call)
     monkeypatch.setattr(main, "call_llm", lambda prompt: f"fake answer to: {prompt}")
+    monkeypatch.setattr(main, "warmup_classifier", lambda: True)
+    main.app.state.ready = False
+    main.app.state.classifier_status = "starting"
     main.limiter.reset()

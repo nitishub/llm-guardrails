@@ -52,3 +52,10 @@ def classify_injection(text: str) -> Optional[ClassifierResult]:
     probabilities = torch.softmax(logits, dim=-1)[0]
     score = 1.0 - probabilities[0].item()
     return ClassifierResult(model=MODEL_NAME, score=score, is_injection=score >= THRESHOLD)
+
+def warmup_classifier() -> bool:
+    """Loads the model and runs one dummy pass so the first real request isn't slow."""
+    if not ML_AVAILABLE:
+        return False
+    classify_injection("warmup")
+    return True

@@ -5,6 +5,7 @@ import secrets
 import time
 import uuid
 from typing import List, Optional
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
@@ -15,6 +16,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.llm import call_llm
+from app.classifier import warmup_classifier
 from app.pipeline import Action, screen_prompt
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -23,11 +25,38 @@ logger = logging.getLogger("guardrails")
 
 def log_event(**fields) -> None:
     logger.info(json.dumps(fields))
+
+# Custom lifespan context manager to handle startup and shutdown events, including classifier warmup.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.ready = False #custom attribute to track readiness of the app
+    app.state.classifier_status = "starting" #custom attribute to track classifier status
+    started = time.perf_counter()
+    try:
+        loaded = warmup_classifier()
+        app.state.classifier_status = "loaded" if loaded else "disabled"
+        app.state.ready = True
+        log_event(
+            event="startup",
+            classifier=app.state.classifier_status,
+            warmup_ms=round((time.perf_counter() - started) * 1000, 1),
+        )
+    except Exception as exc:
+        app.state.classifier_status = "failed"
+        app.state.ready = False
+        log_event(event="startup_error", error=type(exc).__name__)
+    yield
+    app.state.ready = False
+
+
 app = FastAPI(
     title="LLM Guardrails",
     description="Screens prompts for PII and prompt injection before they reach an LLM.",
     version="0.1.0",
+    lifespan=lifespan,
 )
+app.state.ready = False
+app.state.classifier_status = "starting"
 
 API_KEY = os.environ.get("GUARDRAILS_API_KEY", "")
 if not API_KEY:
@@ -71,6 +100,13 @@ class ChatResponse(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+@app.get("/ready")
+def ready(response: Response) -> dict:
+    if not app.state.ready:
+        response.status_code = 503
+        return {"status": "not_ready", "classifier": app.state.classifier_status}
+    return {"status": "ready", "classifier": app.state.classifier_status}
 
 
 @app.post("/chat", dependencies=[Depends(require_api_key)])
