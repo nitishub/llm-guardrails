@@ -4,7 +4,7 @@
 
 A security layer that sits between users and a large language model (LLM). Every prompt is checked for **prompt injection**, **jailbreaks** and **personal data (PII)** before it is allowed to reach the model.
 
-> **Status:** core pipeline, LLM integration, tests, CI and evaluation are complete. Hardening and deployment are in progress (see [Roadmap](#roadmap)).
+> **Status:** core pipeline, LLM integration, tests, CI, evaluation and API hardening (auth, rate limiting, readiness) are complete. Docker and cloud deployment are in progress (see [Roadmap](#roadmap)).
 
 **Tech stack:** Python 3.12 · FastAPI · PyTorch · Hugging Face Transformers (DeBERTa) · OpenAI API (GPT-5 nano) · Pydantic · pytest
 
@@ -81,6 +81,7 @@ Full method, raw outputs and trade-offs are in **[docs/evaluation.md](docs/evalu
 - **Privacy by design.** Only redacted text reaches the LLM *and* the judge. Logs record what happened (action, scores, latency) but **never the prompt text**.
 - **Production-minded API.** `/chat` requires an API key (`X-API-Key`) checked with a constant-time comparison, and the service refuses to start if no key is configured. Every response carries a request ID (`X-Request-ID`) and there is one structured JSON log line per request. Provider outages return a clean `502` instead of a crash, and input length is validated.
 - **Rate limiting that scales out.** Each client IP is limited (default 20 requests per minute) with [slowapi](https://github.com/laurentS/slowapi), using a sliding-window counter. Clients over the limit get `429` with a `Retry-After` header. Counts can be stored in **Redis**, so they are shared across workers and survive restarts. If Redis goes down, the limiter falls back to in-memory counts instead of failing open or taking the API down. Authentication runs first, so rejected requests don't use up anyone's limit.
+- **Ready before the first request.** The classifier is loaded and warmed up at startup, so the first user doesn't wait for a model download. There are two probes: `/health` (liveness: the process is up) and `/ready` (readiness: returns `503` until the model is warmed up, or if warmup failed). A `startup` log line records the classifier status and warmup time.
 - **Keeps working without the ML model.** If PyTorch isn't installed, the classifier is skipped and regex keeps protecting the service.
 
 ---
@@ -110,6 +111,13 @@ export GUARDRAILS_RATE_LIMIT_STORAGE=redis://localhost:6379
 ```
 
 Interactive API docs: <http://127.0.0.1:8000/docs> (click **Authorize** and paste your `GUARDRAILS_API_KEY`).
+
+Check that the service is up and ready (no key needed):
+
+```bash
+curl -s localhost:8000/health   # {"status":"ok"}
+curl -s localhost:8000/ready    # {"status":"ready","classifier":"loaded"}
+```
 
 ### Example requests
 
@@ -163,13 +171,14 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-There are **57 tests** (54 pass, plus 3 marked as known limitations). They run **fully offline in seconds**: the ML model and OpenAI are replaced with fakes, so the tests are fast, repeatable and never cost money.
+There are **61 tests** (58 pass, plus 3 marked as known limitations). They run **fully offline in seconds**: the ML model and OpenAI are replaced with fakes, so the tests are fast, repeatable and never cost money.
 
 Instead of implementation details, the tests check security guarantees:
 
 - Blocked prompts **never** reach the LLM.
 - Requests with a missing or wrong API key get `401` and **never** reach the LLM.
 - Clients over the rate limit get `429` with `Retry-After` and **never** reach the LLM. Rejected-auth requests don't count toward the limit.
+- `/ready` returns `503` until startup finishes and if the model fails to load, while `/health` stays `200`.
 - The LLM and the judge **only** ever see redacted text.
 - Judge failures (outage, invalid JSON, wrong types, empty reply) **block** the prompt.
 - Logs **never** contain the user's prompt.
@@ -183,7 +192,7 @@ Known weaknesses are recorded as strict `xfail` tests. They are documented in th
 
 ```
 app/
-├── main.py         # FastAPI app: /health, /chat, API-key auth, rate limiting, request IDs, JSON logging
+├── main.py         # FastAPI app: /health, /ready, /chat, startup warmup, API-key auth, rate limiting, request IDs, JSON logging
 ├── pipeline.py     # Orchestrates all layers and makes the final decision
 ├── normalize.py    # Unicode normalization and hidden-character removal
 ├── injection.py    # Layer 1: regex attack patterns
@@ -226,7 +235,7 @@ No guardrail is perfect. These are the known gaps:
 - [x] **CI:** tests run automatically on every push with GitHub Actions
 - [x] **Red-team evaluation:** a labelled dataset of attack and harmless prompts, reporting catch rate, false-positive rate, latency and judge cost for each layer ([report](docs/evaluation.md))
 - [x] API-key authentication and Redis-backed rate limiting
-- [ ] **Hardening:** loading the model at startup and a `/ready` endpoint
+- [x] Model warmup at startup and a `/ready` readiness endpoint
 - [ ] **Docker image:** CPU-only, with the model built into the image
 - [ ] **Cloud deployment** with HTTPS and health checks
 - [ ] **Possible extras:** screening model output, comparing with Meta's Llama Prompt Guard 2
