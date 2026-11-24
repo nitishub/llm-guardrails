@@ -4,7 +4,7 @@
 
 A security layer that sits between users and a large language model (LLM). Every prompt is checked for **prompt injection**, **jailbreaks** and **personal data (PII)** before it is allowed to reach the model.
 
-> **Status:** core pipeline, LLM integration, tests, CI, evaluation and API hardening (auth, rate limiting, readiness) are complete. Docker and cloud deployment are in progress (see [Roadmap](#roadmap)).
+> **Status:** core pipeline, LLM integration, tests, CI, evaluation and API hardening (auth, rate limiting, readiness) and Docker are complete. Cloud deployment is in progress (see [Roadmap](#roadmap)).
 
 **Tech stack:** Python 3.12 · FastAPI · PyTorch · Hugging Face Transformers (DeBERTa) · OpenAI API (GPT-5 nano) · Pydantic · pytest
 
@@ -82,13 +82,14 @@ Full method, raw outputs and trade-offs are in **[docs/evaluation.md](docs/evalu
 - **Production-minded API.** `/chat` requires an API key (`X-API-Key`) checked with a constant-time comparison, and the service refuses to start if no key is configured. Every response carries a request ID (`X-Request-ID`) and there is one structured JSON log line per request. Provider outages return a clean `502` instead of a crash, and input length is validated.
 - **Rate limiting that scales out.** Each client IP is limited (default 20 requests per minute) with [slowapi](https://github.com/laurentS/slowapi), using a sliding-window counter. Clients over the limit get `429` with a `Retry-After` header. Counts can be stored in **Redis**, so they are shared across workers and survive restarts. If Redis goes down, the limiter falls back to in-memory counts instead of failing open or taking the API down. Authentication runs first, so rejected requests don't use up anyone's limit.
 - **Ready before the first request.** The classifier is loaded and warmed up at startup, so the first user doesn't wait for a model download. There are two probes: `/health` (liveness: the process is up) and `/ready` (readiness: returns `503` until the model is warmed up, or if warmup failed). A `startup` log line records the classifier status and warmup time.
+- **Container-ready.** The Docker image uses CPU-only PyTorch (the default Linux build adds several GB of GPU libraries) and has the model built in, so containers start without contacting Hugging Face. It runs as a non-root user, contains no secrets (keys are passed in at run time), and Docker's health check uses `/ready`. Docker Compose starts the app together with Redis on a private network.
 - **Keeps working without the ML model.** If PyTorch isn't installed, the classifier is skipped and regex keeps protecting the service.
 
 ---
 
 ## Quick start
 
-**Requirements:** Python 3.12 and an OpenAI API key.
+**Requirements:** Python 3.12 (or Docker) and an OpenAI API key.
 
 ```bash
 git clone https://github.com/nitishub/llm-guardrails.git
@@ -108,6 +109,30 @@ Rate-limit counts are kept in memory by default. To store them in Redis instead,
 ```bash
 brew install redis && brew services start redis   # or: docker run -d -p 6379:6379 redis
 export GUARDRAILS_RATE_LIMIT_STORAGE=redis://localhost:6379
+```
+
+### Or run with Docker
+
+No Python setup needed, and Redis is included. Create a `.env` file in the project root (it is ignored by Git and Docker):
+
+```dotenv
+OPENAI_API_KEY=sk-...
+GUARDRAILS_API_KEY=your-secret-key
+```
+
+Then start the app and Redis together:
+
+```bash
+docker compose up --build   # first build takes a few minutes (PyTorch + 714 MB model)
+docker compose ps           # app shows "healthy" once the model is warmed up
+docker compose down         # stop and remove the containers
+```
+
+To run only the app (in-memory rate limiting), with both keys exported in your shell:
+
+```bash
+docker build -t llm-guardrails .
+docker run --rm -p 8000:8000 -e OPENAI_API_KEY -e GUARDRAILS_API_KEY llm-guardrails
 ```
 
 Interactive API docs: <http://127.0.0.1:8000/docs> (click **Authorize** and paste your `GUARDRAILS_API_KEY`).
@@ -204,6 +229,8 @@ tests/              # Offline pytest suite
 data/redteam.jsonl  # Labelled evaluation dataset (86 prompts)
 scripts/evaluate.py # Evaluation: catch rate, false positives, latency, judge cost
 docs/evaluation.md  # Evaluation report
+Dockerfile          # CPU-only image with the model built in, non-root, health check on /ready
+docker-compose.yml  # App + Redis for shared rate-limit counts
 ```
 
 ---
@@ -217,7 +244,7 @@ No guardrail is perfect. These are the known gaps:
 - **PII coverage** is pattern-based: names and street addresses are not detected.
 - **Only user input is screened.** Model output, multi-turn conversations and instructions hidden in retrieved documents (RAG) or tool results are out of scope.
 - **Classifier limits:** it's English-only, it reads at most 512 tokens, and the upstream model is no longer maintained.
-- **Rate limiting is per IP, not per client.** Behind a proxy or load balancer, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy IP>`, or every request appears to come from the proxy. With one shared API key, clients can't be limited or revoked individually. slowapi's warning when a limit is hit also includes the client IP, an exception to the "no personal data in logs" rule.
+- **Rate limiting is per IP, not per client.** Behind a proxy or load balancer, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy IP>`, or every request appears to come from the proxy. The same applies to Docker's port forwarding, so in a container all clients may share one limit. With one shared API key, clients can't be limited or revoked individually. slowapi's warning when a limit is hit also includes the client IP, an exception to the "no personal data in logs" rule.
 - **Not a security boundary on its own.** A guardrail lowers risk; real protection also needs least-privilege tool access, output validation and human approval for sensitive actions.
 
 ---
@@ -236,6 +263,6 @@ No guardrail is perfect. These are the known gaps:
 - [x] **Red-team evaluation:** a labelled dataset of attack and harmless prompts, reporting catch rate, false-positive rate, latency and judge cost for each layer ([report](docs/evaluation.md))
 - [x] API-key authentication and Redis-backed rate limiting
 - [x] Model warmup at startup and a `/ready` readiness endpoint
-- [ ] **Docker image:** CPU-only, with the model built into the image
+- [x] Docker image (CPU-only, model built in) and Docker Compose with Redis
 - [ ] **Cloud deployment** with HTTPS and health checks
 - [ ] **Possible extras:** screening model output, comparing with Meta's Llama Prompt Guard 2

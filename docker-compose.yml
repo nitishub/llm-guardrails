@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    image: llm-guardrails
+    ports:
+      - "8000:8000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY}
+      GUARDRAILS_API_KEY: ${GUARDRAILS_API_KEY:?Set GUARDRAILS_API_KEY}
+      GUARDRAILS_RATE_LIMIT_STORAGE: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
