@@ -4,9 +4,16 @@
 
 A security layer that sits between users and a large language model (LLM). Every prompt is checked for **prompt injection**, **jailbreaks** and **personal data (PII)** before it is allowed to reach the model.
 
-> **Status:** core pipeline, LLM integration, tests, CI, evaluation and API hardening (auth, rate limiting, readiness) and Docker are complete. Cloud deployment is in progress (see [Roadmap](#roadmap)).
+> **Status:** complete and deployed on Google Cloud Run: core pipeline, LLM integration, tests, CI, evaluation, API hardening (auth, rate limiting, readiness) and Docker (see [Roadmap](#roadmap)).
 
-**Tech stack:** Python 3.12 · FastAPI · PyTorch · Hugging Face Transformers (DeBERTa) · OpenAI API (GPT-5 nano) · Pydantic · pytest
+**Tech stack:** Python 3.12 · FastAPI · PyTorch · Hugging Face Transformers (DeBERTa) · OpenAI API (GPT-5 nano) · Pydantic · pytest · Redis · Docker · Google Cloud Run · GitHub Actions
+
+**Live demo:** <https://llm-guardrails-reorb4fwdq-uc.a.run.app>
+
+- [`/docs`](https://llm-guardrails-reorb4fwdq-uc.a.run.app/docs): interactive API documentation
+- [`/health`](https://llm-guardrails-reorb4fwdq-uc.a.run.app/health) and [`/ready`](https://llm-guardrails-reorb4fwdq-uc.a.run.app/ready): public status checks
+- `/chat` requires an API key, which I can share on request. This keeps the demo from running up LLM costs.
+- The service scales to zero when idle, so the first request after a quiet period can take 20–40 seconds while the model loads.
 
 ---
 
@@ -189,6 +196,32 @@ All settings are environment variables. Only the two keys are required.
 
 ---
 
+## Deployment (Google Cloud Run)
+
+The live demo runs on [Cloud Run](https://cloud.google.com/run), using the same Docker image:
+
+- **Secrets** (`OPENAI_API_KEY`, `GUARDRAILS_API_KEY`) are stored in **Secret Manager** and passed to the app as environment variables when it starts. They're never part of the image or the deploy command.
+- **Least privilege:** the service runs as a dedicated service account that can only read those two secrets.
+- **Startup probe on `/ready`:** Cloud Run only sends traffic once the model is warmed up. A new version whose model fails to load never receives traffic.
+- **Cost controls:** it scales to zero when idle and is capped at 1 instance. A spending limit on the OpenAI side means a leaked key can't run up a large bill.
+- **Logs:** the JSON log lines are parsed by Cloud Logging as structured fields, so they can be filtered (e.g. `jsonPayload.action="block"`).
+
+Deploy steps (after enabling Cloud Run, Artifact Registry and Secret Manager, and creating the two secrets and the service account):
+
+```bash
+IMAGE=us-central1-docker.pkg.dev/$PROJECT_ID/llm-guardrails/app:$(git rev-parse --short HEAD)
+docker buildx build --platform linux/amd64 -t $IMAGE --push .   # Cloud Run needs amd64
+
+gcloud run deploy llm-guardrails \
+  --image=$IMAGE --region=us-central1 --service-account=$SA \
+  --port=8000 --cpu=1 --memory=2Gi --min-instances=0 --max-instances=1 --cpu-boost --timeout=60 \
+  --startup-probe=httpGet.path=/ready,httpGet.port=8000,periodSeconds=5,timeoutSeconds=3,failureThreshold=48 \
+  --set-secrets=OPENAI_API_KEY=openai-api-key:latest,GUARDRAILS_API_KEY=guardrails-api-key:latest \
+  --allow-unauthenticated   # public URL; /chat is still protected by the app's API key
+```
+
+---
+
 ## Testing
 
 ```bash
@@ -244,7 +277,7 @@ No guardrail is perfect. These are the known gaps:
 - **PII coverage** is pattern-based: names and street addresses are not detected.
 - **Only user input is screened.** Model output, multi-turn conversations and instructions hidden in retrieved documents (RAG) or tool results are out of scope.
 - **Classifier limits:** it's English-only, it reads at most 512 tokens, and the upstream model is no longer maintained.
-- **Rate limiting is per IP, not per client.** Behind a proxy or load balancer, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy IP>`, or every request appears to come from the proxy. The same applies to Docker's port forwarding, so in a container all clients may share one limit. With one shared API key, clients can't be limited or revoked individually. slowapi's warning when a limit is hit also includes the client IP, an exception to the "no personal data in logs" rule.
+- **Rate limiting is per IP, not per client.** Behind a proxy or load balancer, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy IP>`, or every request appears to come from the proxy. The same applies to Docker's port forwarding, so in a container all clients may share one limit. On Cloud Run, every request currently appears to come from Cloud Run's proxy, so all clients share one limit, which acts as a global cap. Taking the client IP from `X-Forwarded-For` needs care: its first entry can be faked by the client, so only the entry added by the trusted proxy should be used. With one shared API key, clients can't be limited or revoked individually. slowapi's warning when a limit is hit also includes the client IP, an exception to the "no personal data in logs" rule.
 - **Not a security boundary on its own.** A guardrail lowers risk; real protection also needs least-privilege tool access, output validation and human approval for sensitive actions.
 
 ---
@@ -264,5 +297,7 @@ No guardrail is perfect. These are the known gaps:
 - [x] API-key authentication and Redis-backed rate limiting
 - [x] Model warmup at startup and a `/ready` readiness endpoint
 - [x] Docker image (CPU-only, model built in) and Docker Compose with Redis
-- [ ] **Cloud deployment** with HTTPS and health checks
+- [x] **Cloud deployment** on Google Cloud Run with HTTPS, Secret Manager and a `/ready` startup probe
+- [ ] **Per-client rate limits on Cloud Run:** read the client IP from the trusted end of `X-Forwarded-For`
+- [ ] **Continuous deployment:** build and deploy from GitHub Actions on every push to `main`
 - [ ] **Possible extras:** screening model output, comparing with Meta's Llama Prompt Guard 2
